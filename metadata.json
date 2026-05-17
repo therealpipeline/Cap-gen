@@ -1,6 +1,6 @@
 {
   "name": "PART4-C",
-  "description": "Professional word-by-word SRT caption generator powered by Groq Whisper Large model and Vercel-ready server architecture.",
+  "description": "Professional word-by-word SRT caption generator. (Supports up to 25MB via Groq Whisper v3-Large).",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

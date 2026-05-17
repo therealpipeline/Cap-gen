@@ -42,27 +42,40 @@ export default function AudioUploader() {
       let data;
 
       if (!response.ok) {
+        let errorMsg = 'Transcription failed';
         if (contentType && contentType.includes("application/json")) {
-          const errorData = await response.json();
-          throw new Error(errorData.details || errorData.error || 'Transcription failed');
+          try {
+            const errorData = await response.json();
+            errorMsg = errorData.details || errorData.error || errorMsg;
+          } catch (e) {
+            errorMsg = `Server error (${response.status}): Could not parse error response.`;
+          }
         } else {
           // Handle non-JSON errors (like Vercel HTML error pages)
           const text = await response.text();
           if (response.status === 413) {
-            throw new Error("File too large for Vercel deployment. Max limit is usually 4.5MB on free tier.");
+            errorMsg = "File too large for Vercel deployment. Max limit is 4.5MB on Free tier, 15MB on Pro.";
+          } else if (response.status === 504) {
+            errorMsg = "Gateway timeout: The transcription process exceeded Vercel's execution time limit.";
+          } else if (text.includes("A server error occurred")) {
+            errorMsg = "Vercel Server Error: Your serverless function crashed. Please check if GROQ_API_KEY is correctly set in Vercel Environment Variables.";
+          } else {
+            errorMsg = `Server error (${response.status}): ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`;
           }
-          if (response.status === 504) {
-            throw new Error("Gateway timeout: The transcription took too long for Vercel's limits.");
-          }
-          throw new Error(`Server error (${response.status}): ${text.substring(0, 100)}...`);
         }
+        throw new Error(errorMsg);
       }
 
       if (contentType && contentType.includes("application/json")) {
-        data = await response.json();
-        setResult(data);
+        try {
+          data = await response.json();
+          setResult(data);
+        } catch (e) {
+          throw new Error("Failed to parse successful response as JSON. The server might have returned an invalid result.");
+        }
       } else {
-        throw new Error("Expected JSON response but received something else.");
+        const rawText = await response.text();
+        throw new Error(`Invalid response format (expected JSON, got ${contentType}). Content: ${rawText.substring(0, 50)}...`);
       }
     } catch (err: any) {
       setError(err.message || 'An unexpected error occurred');
@@ -184,13 +197,27 @@ export default function AudioUploader() {
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="mt-6 p-4 border border-[#cf222e]/20 bg-[#fff5f5] text-[#cf222e] rounded-xl flex items-start space-x-3"
+              className="mt-6 p-4 border border-[#cf222e]/20 bg-[#fff5f5] text-[#cf222e] rounded-xl flex flex-col space-y-3"
             >
-              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-              <div className="space-y-1">
-                <p className="text-[11px] font-bold uppercase tracking-tight">Validation Error</p>
-                <p className="text-[11px] leading-relaxed">{error}</p>
+              <div className="flex items-start space-x-3">
+                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <div className="space-y-1">
+                  <p className="text-[11px] font-bold uppercase tracking-tight">System Fault Detected</p>
+                  <p className="text-[11px] leading-relaxed font-medium">{error}</p>
+                </div>
               </div>
+              {error.includes("GROQ_API_KEY") || error.includes("Vercel Server Error") ? (
+                <div className="bg-white/50 p-3 rounded-lg border border-[#cf222e]/10">
+                  <p className="text-[10px] font-bold text-[#24292f] mb-2 uppercase tracking-wide">Action Required:</p>
+                  <ol className="text-[10px] space-y-1 list-decimal ml-4 text-[#57606a]">
+                    <li>Go to your <b>Vercel Dashboard</b></li>
+                    <li>Settings → <b>Environment Variables</b></li>
+                    <li>Add Name: <span className="font-mono text-black">GROQ_API_KEY</span></li>
+                    <li>Add Value: <span className="font-mono text-black">your_api_key_here</span></li>
+                    <li><b>Redeploy</b> your application</li>
+                  </ol>
+                </div>
+              ) : null}
             </motion.div>
           )}
         </div>

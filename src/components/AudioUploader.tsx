@@ -38,13 +38,32 @@ export default function AudioUploader() {
         body: formData,
       });
 
+      const contentType = response.headers.get("content-type");
+      let data;
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.details || 'Transcription failed');
+        if (contentType && contentType.includes("application/json")) {
+          const errorData = await response.json();
+          throw new Error(errorData.details || errorData.error || 'Transcription failed');
+        } else {
+          // Handle non-JSON errors (like Vercel HTML error pages)
+          const text = await response.text();
+          if (response.status === 413) {
+            throw new Error("File too large for Vercel deployment. Max limit is usually 4.5MB on free tier.");
+          }
+          if (response.status === 504) {
+            throw new Error("Gateway timeout: The transcription took too long for Vercel's limits.");
+          }
+          throw new Error(`Server error (${response.status}): ${text.substring(0, 100)}...`);
+        }
       }
 
-      const data = await response.json();
-      setResult(data);
+      if (contentType && contentType.includes("application/json")) {
+        data = await response.json();
+        setResult(data);
+      } else {
+        throw new Error("Expected JSON response but received something else.");
+      }
     } catch (err: any) {
       setError(err.message || 'An unexpected error occurred');
     } finally {
@@ -72,7 +91,7 @@ export default function AudioUploader() {
         {[
           { label: "Engine", value: "Whisper L3" },
           { label: "Accuracy", value: "Word-Level" },
-          { label: "Max Size", value: "25MB" },
+          { label: "Max Size", value: "512MB" },
           { label: "Format", value: "MP3/WAV" }
         ].map((stat, i) => (
           <div key={i} className="bg-white border border-[#d0d7de] p-3 rounded-xl shadow-sm text-center">

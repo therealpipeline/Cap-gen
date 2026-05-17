@@ -48,6 +48,16 @@ export default function AudioUploader() {
   const handleUpload = async () => {
     if (!file) return;
 
+    // Pre-flight validation
+    if (file.size > 25 * 1024 * 1024) {
+      setError({
+        title: "API Limit Warning",
+        message: `Groq's Whisper API permits a maximum of 25MB. Your file is ${(file.size / (1024 * 1024)).toFixed(2)}MB. Please compress the audio before processing.`,
+        type: 'api'
+      });
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setResult(null);
@@ -56,10 +66,15 @@ export default function AudioUploader() {
     formData.append('audio', file);
 
     try {
+      // Abort controller for timeouts
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
+
       const response = await fetch('/api/transcribe', {
         method: 'POST',
         body: formData,
-      });
+        signal: controller.signal
+      }).finally(() => clearTimeout(timeoutId));
 
       const contentType = response.headers.get("content-type");
       let data;
@@ -83,19 +98,27 @@ export default function AudioUploader() {
         } else {
           const text = await response.text();
           type = 'network';
+          
           if (response.status === 413) {
-            title = "File Too Large";
-            message = "Vercel deployments have strict upload limits (Free: 4.5MB, Pro: 15MB). Your file exceeds these limits.";
+            title = "Payload Too Large";
+            message = "Your file is too big for the host (Vercel Free: 4.5MB). Try a smaller or compressed file.";
           } else if (response.status === 504) {
-            title = "Connection Timeout";
-            message = "The transcription process took too long and was terminated by the cloud provider.";
-          } else if (text.includes("A server error occurred")) {
-            title = "Deployment Crash";
-            message = "Your Vercel serverless function crashed. This is usually due to a missing GROQ_API_KEY or an unhandled exception.";
+            title = "Gateway Timeout";
+            message = "The server took too long to process. Large files often hit the 10s-60s execution limit on serverless functions.";
+          } else if (text.includes("A server error occurred") || text.includes("FUNCTION_INVOCATION_FAILED")) {
+            title = "Service Crash";
+            message = "The server process crashed while processing your request. Most common cause: Missing GROQ_API_KEY or the process ran out of memory.";
+            type = 'config';
+          } else if (text.includes("Environment Variable") || text.includes("not found")) {
+            title = "Environment Configuration Error";
+            message = "A required secret key (GROQ_API_KEY) is missing from the server environment.";
             type = 'config';
           } else {
-            title = `Gateway Error (${response.status})`;
-            message = text.length > 200 ? text.substring(0, 200) + "..." : text;
+            title = `Service Error (${response.status})`;
+            // Extract the body content if it's HTML, or just show the text
+            const doc = new DOMParser().parseFromString(text, 'text/html');
+            const bodyText = doc.body.textContent?.trim() || text;
+            message = bodyText.length > 200 ? bodyText.substring(0, 200) + "..." : bodyText;
           }
         }
         setError({ title, message, type });
@@ -107,22 +130,50 @@ export default function AudioUploader() {
           data = await response.json();
           setResult(data);
         } catch (e) {
-          setError({
-            title: "Parser Error",
-            message: "The server succeeded but returned an invalid data format.",
-            type: 'system'
-          });
+          const title = "Response Corruption";
+          const message = "The server succeeded but returned a malformed response that couldn't be parsed.";
+          setError({ title, message, type: 'system' });
+          throw new Error(message);
         }
       } else {
         const rawText = await response.text();
-        setError({
-          title: "Protocol Mismatch",
-          message: `Expected JSON but received ${contentType}. Raw response: ${rawText.substring(0, 100)}`,
-          type: 'network'
-        });
+        const title = "Protocol Mismatch";
+        const message = `Expected JSON but received ${contentType}. This often happens if the request was intercepted by a login page or a gateway error.`;
+        setError({ title, message, type: 'network' });
+        throw new Error(message);
       }
     } catch (err: any) {
-      console.error(err);
+      console.error("Transcription execution error:", err);
+      
+      if (err.name === 'AbortError') {
+        setError({
+          title: "Request Timeout",
+          message: "The server took too long to respond. Large audio files (especially on Vercel's free tier) often exceed the execution time limit.",
+          type: 'network'
+        });
+      } else if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
+        // This is often triggered by Vercel's 4.5MB request body limit closing the connection abruptly
+        if (file && file.size > 4.5 * 1024 * 1024) {
+          setError({
+            title: "Network Connection Interrupted",
+            message: "The connection was closed unexpectedly. Since your file is larger than 4.5MB, this is likely due to Vercel's strict request size limit on the Free tier.",
+            type: 'network'
+          });
+        } else {
+          setError({
+            title: "Network Unreachable",
+            message: "The application could not establish a connection to the server. Please check your internet connection or verify if the server is currently online.",
+            type: 'network'
+          });
+        }
+      } else if (!error) {
+        // Fallback for other errors not already handled
+        setError({
+          title: "Execution Fault",
+          message: err.message || "An unexpected error occurred during transcription processing.",
+          type: 'system'
+        });
+      }
     } finally {
       setLoading(false);
     }

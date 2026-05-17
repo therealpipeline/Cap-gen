@@ -106,12 +106,28 @@ app.post("/api/transcribe", (req, res, next) => {
     res.json({ srt: srtContent, transcription: data.text });
   } catch (error: any) {
     const statusCode = error.response?.status || 500;
-    const errorMsg = error.response?.data?.error?.message || error.message;
-    console.error(`Status ${statusCode}: ${errorMsg}`);
+    let errorMsg = error.message;
+    let errorDetails = "The transcription service encountered an error.";
+
+    if (error.response?.data) {
+      // Catch Groq specific API errors
+      if (typeof error.response.data === 'object') {
+        errorMsg = error.response.data.error?.message || error.response.data.message || error.message;
+        errorDetails = `API Provider Error: ${errorMsg}`;
+      } else {
+        errorDetails = `Raw API Response: ${String(error.response.data).substring(0, 100)}`;
+      }
+    } else if (error.code === 'ECONNABORTED') {
+      errorMsg = "Request Timeout";
+      errorDetails = "The connection to the Groq API timed out. This could be due to a large file or network congestion.";
+    }
+
+    console.error(`[Server Error] Status ${statusCode}: ${errorMsg}`);
     
     res.status(statusCode).json({ 
-      error: "Cloud Gateway Error", 
-      details: errorMsg 
+      error: errorMsg, 
+      details: errorDetails,
+      code: error.code || 'CLOUD_EXECUTION_ERROR'
     });
   }
 });

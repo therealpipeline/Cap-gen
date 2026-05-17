@@ -13,15 +13,28 @@ const upload = multer({
 });
 
 // API Routes
+app.get("/api/status", (req, res) => {
+  const hasKey = !!process.env.GROQ_API_KEY;
+  res.json({ 
+    status: "online", 
+    configured: hasKey,
+    environment: process.env.NODE_ENV,
+    limit: "512MB (Server) / 25MB (Groq API)"
+  });
+});
+
 app.post("/api/transcribe", (req, res, next) => {
   upload.single("audio")(req, res, (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(413).json({ error: "File too large. System is configured for 512MB, but please check your hosting provider (e.g. Vercel Free is 4.5MB)." });
+        return res.status(413).json({ 
+          error: "Payload Too Large", 
+          details: "The audio file exceeds the 512MB limit configured on this server. Note that Vercel free tier deployment limits uploads to ~4.5MB." 
+        });
       }
-      return res.status(400).json({ error: err.message });
+      return res.status(400).json({ error: "Upload Error", details: err.message });
     } else if (err) {
-      return res.status(500).json({ error: "An unknown error occurred during upload." });
+      return res.status(500).json({ error: "System Error", details: "An internal error occurred during the file upload process." });
     }
     next();
   });
@@ -29,21 +42,24 @@ app.post("/api/transcribe", (req, res, next) => {
   try {
     const file = req.file;
     if (!file) {
-      return res.status(400).json({ error: "No audio file uploaded" });
+      return res.status(400).json({ error: "Missing Data", details: "No audio file was received by the server." });
+    }
+
+    const groqKey = process.env.GROQ_API_KEY;
+    if (!groqKey) {
+      console.error("GROQ_API_KEY is not defined in environment variables.");
+      return res.status(500).json({ 
+        error: "Configuration Missing", 
+        details: "The GROQ_API_KEY is not set on the server. If this is a Vercel deployment, please add it to your Project Settings -> Environment Variables." 
+      });
     }
 
     // Check for Groq's 25MB API limit
     if (file.size > 25 * 1024 * 1024) {
       return res.status(400).json({ 
-        error: "Groq API Limit Exceeded", 
-        details: "The audio file is " + (file.size / (1024 * 1024)).toFixed(2) + "MB. Groq's Whisper API has a hard limit of 25MB. Please compress the audio or split it into smaller parts." 
+        error: "API Provider Limit", 
+        details: `The uploaded file (${(file.size / (1024 * 1024)).toFixed(2)}MB) exceeds Groq's Whisper API limit of 25MB. Please use a smaller file or compress your audio.` 
       });
-    }
-
-    const groqKey = process.env.GROQ_API_KEY;
-    if (!groqKey) {
-      console.error("GROQ_API_KEY missing");
-      return res.status(500).json({ error: "Server configuration error: GROQ_API_KEY is missing." });
     }
 
     const formData = new FormData();
@@ -84,14 +100,19 @@ app.post("/api/transcribe", (req, res, next) => {
         srtContent += `${segment.text.trim()}\n\n`;
       });
     } else {
-      return res.status(422).json({ error: "Speech not detected." });
+      return res.status(422).json({ error: "Processing Failure", details: "Groq processed the file but could not identify any speech content." });
     }
 
     res.json({ srt: srtContent, transcription: data.text });
   } catch (error: any) {
     const statusCode = error.response?.status || 500;
     const errorMsg = error.response?.data?.error?.message || error.message;
-    res.status(statusCode).json({ error: "Transcription failed", details: errorMsg });
+    console.error(`Status ${statusCode}: ${errorMsg}`);
+    
+    res.status(statusCode).json({ 
+      error: "Cloud Gateway Error", 
+      details: errorMsg 
+    });
   }
 });
 

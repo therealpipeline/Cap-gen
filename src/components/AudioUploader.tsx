@@ -11,8 +11,31 @@ export default function AudioUploader() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TranscriptionResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ title: string; message: string; type: 'config' | 'api' | 'network' | 'system' } | null>(null);
+  const [serverStatus, setServerStatus] = useState<{ configured: boolean; limit: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const res = await fetch('/api/status');
+        if (res.ok) {
+          const data = await res.json();
+          setServerStatus(data);
+          if (!data.configured) {
+            setError({
+              title: "Configuration Missing",
+              message: "The server is running but GROQ_API_KEY is not configured.",
+              type: 'config'
+            });
+          }
+        }
+      } catch (e) {
+        console.error("Failed to check server status");
+      }
+    };
+    checkStatus();
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -42,28 +65,41 @@ export default function AudioUploader() {
       let data;
 
       if (!response.ok) {
-        let errorMsg = 'Transcription failed';
+        let title = 'Transcription failed';
+        let message = 'An unknown error occurred';
+        let type: any = 'system';
+
         if (contentType && contentType.includes("application/json")) {
           try {
             const errorData = await response.json();
-            errorMsg = errorData.details || errorData.error || errorMsg;
+            title = errorData.error || title;
+            message = errorData.details || message;
+            
+            if (title.includes("Configuration")) type = 'config';
+            else if (title.includes("API")) type = 'api';
           } catch (e) {
-            errorMsg = `Server error (${response.status}): Could not parse error response.`;
+            message = `Server responded with ${response.status} but error details could not be parsed.`;
           }
         } else {
-          // Handle non-JSON errors (like Vercel HTML error pages)
           const text = await response.text();
+          type = 'network';
           if (response.status === 413) {
-            errorMsg = "File too large for Vercel deployment. Max limit is 4.5MB on Free tier, 15MB on Pro.";
+            title = "File Too Large";
+            message = "Vercel deployments have strict upload limits (Free: 4.5MB, Pro: 15MB). Your file exceeds these limits.";
           } else if (response.status === 504) {
-            errorMsg = "Gateway timeout: The transcription process exceeded Vercel's execution time limit.";
+            title = "Connection Timeout";
+            message = "The transcription process took too long and was terminated by the cloud provider.";
           } else if (text.includes("A server error occurred")) {
-            errorMsg = "Vercel Server Error: Your serverless function crashed. Please check if GROQ_API_KEY is correctly set in Vercel Environment Variables.";
+            title = "Deployment Crash";
+            message = "Your Vercel serverless function crashed. This is usually due to a missing GROQ_API_KEY or an unhandled exception.";
+            type = 'config';
           } else {
-            errorMsg = `Server error (${response.status}): ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`;
+            title = `Gateway Error (${response.status})`;
+            message = text.length > 200 ? text.substring(0, 200) + "..." : text;
           }
         }
-        throw new Error(errorMsg);
+        setError({ title, message, type });
+        throw new Error(message);
       }
 
       if (contentType && contentType.includes("application/json")) {
@@ -71,14 +107,22 @@ export default function AudioUploader() {
           data = await response.json();
           setResult(data);
         } catch (e) {
-          throw new Error("Failed to parse successful response as JSON. The server might have returned an invalid result.");
+          setError({
+            title: "Parser Error",
+            message: "The server succeeded but returned an invalid data format.",
+            type: 'system'
+          });
         }
       } else {
         const rawText = await response.text();
-        throw new Error(`Invalid response format (expected JSON, got ${contentType}). Content: ${rawText.substring(0, 50)}...`);
+        setError({
+          title: "Protocol Mismatch",
+          message: `Expected JSON but received ${contentType}. Raw response: ${rawText.substring(0, 100)}`,
+          type: 'network'
+        });
       }
     } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred');
+      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -197,27 +241,49 @@ export default function AudioUploader() {
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="mt-6 p-4 border border-[#cf222e]/20 bg-[#fff5f5] text-[#cf222e] rounded-xl flex flex-col space-y-3"
+              className={`mt-6 p-5 border rounded-2xl flex flex-col space-y-4 shadow-sm ${
+                error.type === 'config' ? 'border-amber-200 bg-amber-50 text-amber-900' :
+                error.type === 'api' ? 'border-blue-200 bg-blue-50 text-blue-900' :
+                'border-[#cf222e]/20 bg-[#fff5f5] text-[#cf222e]'
+              }`}
             >
               <div className="flex items-start space-x-3">
-                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <AlertCircle className={`w-5 h-5 mt-0.5 flex-shrink-0 ${
+                  error.type === 'config' ? 'text-amber-600' :
+                  error.type === 'api' ? 'text-blue-600' :
+                  'text-[#cf222e]'
+                }`} />
                 <div className="space-y-1">
-                  <p className="text-[11px] font-bold uppercase tracking-tight">System Fault Detected</p>
-                  <p className="text-[11px] leading-relaxed font-medium">{error}</p>
+                  <p className="text-xs font-black uppercase tracking-tight">{error.title}</p>
+                  <p className="text-[11px] leading-relaxed font-semibold opacity-80">{error.message}</p>
                 </div>
               </div>
-              {error.includes("GROQ_API_KEY") || error.includes("Vercel Server Error") ? (
-                <div className="bg-white/50 p-3 rounded-lg border border-[#cf222e]/10">
-                  <p className="text-[10px] font-bold text-[#24292f] mb-2 uppercase tracking-wide">Action Required:</p>
-                  <ol className="text-[10px] space-y-1 list-decimal ml-4 text-[#57606a]">
-                    <li>Go to your <b>Vercel Dashboard</b></li>
-                    <li>Settings → <b>Environment Variables</b></li>
-                    <li>Add Name: <span className="font-mono text-black">GROQ_API_KEY</span></li>
-                    <li>Add Value: <span className="font-mono text-black">your_api_key_here</span></li>
-                    <li><b>Redeploy</b> your application</li>
+
+              {error.type === 'config' && (
+                <div className="bg-white/60 p-4 rounded-xl border border-amber-200/50">
+                  <p className="text-[10px] font-black text-amber-900 mb-3 uppercase tracking-widest flex items-center">
+                    <span className="w-1.5 h-1.5 bg-amber-500 rounded-full mr-2"></span>
+                    Remediation Procedure
+                  </p>
+                  <ol className="text-[11px] space-y-2 list-decimal ml-4 text-amber-800 font-medium">
+                    <li>Open <b>Vercel Dashboard</b> and select this project</li>
+                    <li>Navigation: Settings → <b>Environment Variables</b></li>
+                    <li>Add Key: <code className="bg-white px-1.5 py-0.5 rounded border border-amber-200 font-bold">GROQ_API_KEY</code></li>
+                    <li>Add Value: <code className="bg-white px-1.5 py-0.5 rounded border border-amber-200 font-bold">your_groq_api_token</code></li>
+                    <li><b>Crucial:</b> Trigger a new deployment to apply changes</li>
                   </ol>
                 </div>
-              ) : null}
+              )}
+
+              {error.type === 'network' && error.title.includes("Large") && (
+                <div className="bg-white/60 p-4 rounded-xl border border-red-200/50">
+                  <p className="text-[10px] font-black text-red-900 mb-3 uppercase tracking-widest">Protocol Limitation</p>
+                  <p className="text-[11px] text-red-800 font-medium leading-relaxed">
+                    While our server supports large files, **Vercel's Edge/Serverless limits** supersede this. 
+                    Free accounts are restricted to ~4.5MB uploads. Try a shorter clip or compress the audio.
+                  </p>
+                </div>
+              )}
             </motion.div>
           )}
         </div>
